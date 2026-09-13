@@ -342,3 +342,48 @@ class ResponseCreateResponse(BaseModel):
 Message.model_rebuild()
 ToolCall.model_rebuild()
 ChatCompletionRequest.model_rebuild()
+
+
+class ImageGenerationRequest(BaseModel):
+    """OpenAI-compatible image generation request model."""
+
+    prompt: str = Field(..., description="A text description of the desired image(s).")
+    model: str | None = Field(
+        default=None,
+        description="The model to use for image generation. Defaults to default configured model.",
+    )
+    n: int = Field(default=1, ge=1, le=10, description="The number of images to generate.")
+    size: str | None = Field(
+        default="1024x1024",
+        description="The size of the generated images. (e.g. 1024x1024, 2048x2048)",
+    )
+    response_format: Literal["url", "b64_json"] = Field(
+        default="url",
+        description="The format in which the generated images are returned. Must be one of url or b64_json.",
+    )
+    user: str | None = Field(
+        default=None,
+        description="A unique identifier representing your end-user.",
+    )
+
+
+class ImageItem(BaseModel):
+    """Single generated image item."""
+
+    url: str | None = Field(default=None, description="URL of the generated image.")
+    b64_json: str | None = Field(
+        default=None, description="Base64-encoded JSON string of the generated image."
+    )
+    revised_prompt: str | None = Field(
+        default=None, description="The prompt that was used to generate the image."
+    )
+
+
+class ImageGenerationResponse(BaseModel):
+    """OpenAI-compatible image generation response model."""
+
+    created: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp()),
+        description="The Unix timestamp (in seconds) of when the image was generated.",
+    )
+    data: list[ImageItem] = Field(..., description="List of generated image items.")

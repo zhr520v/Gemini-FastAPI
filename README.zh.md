@@ -83,6 +83,11 @@ python run.py
 这些接口遵循 OpenAI 的 API 规范，允许你将 Gemini 作为 **Drop-in 替代方案** 直接接入现有的 AI 应用。
 
 - **`GET /v1/models`**: 列出所有可用的 Gemini 模型。
+- **`POST /v1/images/generations`**: 专用的高性能无状态图像生成接口（OpenAI 兼容规范）。
+  - **零本地磁盘 I/O**：默认直接返回 Google 2K 原生高清 CDN 图片 URL（`response_format: "url"`）；亦支持纯内存流式转换 Base64（`response_format: "b64_json"`），完全不在服务器本地写入临时文件。
+  - **截流机制（Early Return）**：在检测到图像到达后立即切断上游文本数据流，无需等待模型漫长生成后续描述文本，大幅降低出图延迟。
+  - **彻底旁路 LMDB 会话**：采用 Google 官方无状态临时会话（Temporary Mode），不仅免除本地数据库存储开销，更避免在 Google 账号云端堆积历史会话。
+  - **账号池故障自动重试（Failover Retry）**：当账号池中某个客户端遭遇频控（429）、安全审核或未出图时，自动毫秒级漂移到下一个可用客户端重试。
 - **`POST /v1/chat/completions`**: 统一聊天对话接口。
   - **流式传输**: 设置 `stream: true` 即可实时接收增量响应 (Stream Delta)。
   - **多模态支持**: 支持在消息中包含文本、图片以及文件上传。

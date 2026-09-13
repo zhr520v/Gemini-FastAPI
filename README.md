@@ -83,6 +83,11 @@ The server provides several endpoints, including OpenAI-compatible ones.
 These endpoints are designed to be compatible with OpenAI's API structure, allowing you to use Gemini as a drop-in replacement.
 
 - **`GET /v1/models`**: Lists all supported Gemini models.
+- **`POST /v1/images/generations`**: Dedicated high-performance stateless image generation endpoint (OpenAI compatible).
+  - **Zero Local Disk I/O**: Direct high-res Google CDN URLs (`url`) or memory-only Base64 (`b64_json`), eliminating local disk write bottlenecks.
+  - **Early Return**: Intercepts images from the stream immediately and cuts off subsequent text generation, drastically reducing latency.
+  - **Bypasses LMDB Storage**: Fully stateless, uses Google temporary chat mode (not recorded to cloud account history).
+  - **Multi-Account Failover Retry**: Automatically retries across available accounts in the pool if an account fails or refuses to draw.
 - **`POST /v1/chat/completions`**: Unified chat interface.
   - **Streaming**: Set `stream: true` to receive real-time delta chunks.
   - **Multi-modal**: Supports text, images, and file uploads.
