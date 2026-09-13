@@ -116,7 +116,7 @@ class GeminiConfig(BaseModel):
         description="Strategy for oversized context: 'compaction' summarizes older turns, 'file' sends oversized context as attachment",
     )
     chat_mode: ChatMode = Field(
-        default=ChatMode.NORMAL,
+        default=ChatMode.TEMPORARY,
         description="Chat mode: 'normal' uses standard chats, 'temporary' uses Google's temporary mode (not saved to account) and enforces an effective input limit of 90% of max_chars_per_request",
     )
 

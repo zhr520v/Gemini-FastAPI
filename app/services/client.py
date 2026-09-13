@@ -8,7 +8,6 @@ from loguru import logger
 from app.models import Message
 from app.utils import g_config
 from app.utils.helper import (
-    add_tag,
     normalize_llm_text,
     save_file_to_tempfile,
     save_url_to_tempfile,
@@ -146,45 +145,40 @@ class GeminiClientWrapper(GeminiClient):
                 text_fragments.append(tool_section)
 
         model_input = "\n".join(fragment for fragment in text_fragments if fragment is not None)
-
-        if (model_input or message.role == "tool") and tagged:
-            model_input = add_tag(message.role, model_input)
-
         return model_input, files
 
     @staticmethod
     async def process_conversation(
         messages: list[Message], tempdir: Path | None = None
     ) -> tuple[str, list[Path | str]]:
-        conversation: list[str] = []
         files: list[Path | str] = []
+        if len(messages) == 1:
+            msg = messages[0]
+            content, msg_files = await GeminiClientWrapper.process_message(
+                msg, tempdir, tagged=False
+            )
+            files.extend(msg_files)
+            return content.strip(), files
 
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            if msg.role == "tool":
-                tool_blocks: list[str] = []
-                while i < len(messages) and messages[i].role == "tool":
-                    part, part_files = await GeminiClientWrapper.process_message(
-                        messages[i], tempdir, tagged=False, wrap_tool=False
-                    )
-                    tool_blocks.append(part)
-                    files.extend(part_files)
-                    i += 1
+        conversation: list[str] = []
+        for msg in messages:
+            content, msg_files = await GeminiClientWrapper.process_message(
+                msg, tempdir, tagged=False
+            )
+            files.extend(msg_files)
+            text = content.strip()
+            if not text:
+                continue
+            if msg.role == "system":
+                conversation.append(f"[System Instruction]\n{text}")
+            elif msg.role == "user":
+                conversation.append(f"User: {text}")
+            elif msg.role == "assistant":
+                conversation.append(f"Assistant: {text}")
+            elif msg.role == "tool":
+                conversation.append(f"[Tool Result]\n{text}")
 
-                combined_tool_content = "\n".join(tool_blocks)
-                wrapped_content = f"[ToolResults]\n{combined_tool_content}\n[/ToolResults]"
-                conversation.append(add_tag("tool", wrapped_content))
-            else:
-                input_part, files_part = await GeminiClientWrapper.process_message(
-                    msg, tempdir, tagged=True
-                )
-                conversation.append(input_part)
-                files.extend(files_part)
-                i += 1
-
-        conversation.append(add_tag("assistant", "", unclose=True))
-        return "\n".join(conversation), files
+        return "\n\n".join(conversation), files
 
     @staticmethod
     def extract_output(response: ModelOutput, include_thoughts: bool = True) -> str:
