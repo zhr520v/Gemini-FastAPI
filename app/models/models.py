@@ -115,6 +115,7 @@ class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[Message]
     stream: bool | None = Field(default=False)
+    image: str | None = Field(default=None, description="Optional reference image for image-to-image (base64 or URL)")
     user: str | None = Field(default=None)
     temperature: float | None = Field(default=0.7)
     top_p: float | None = Field(default=1.0)
@@ -219,6 +220,7 @@ class ResponseCreateRequest(BaseModel):
     tool_choice: str | ResponseToolChoice | None = Field(default=None)
     tools: list[Tool | ResponseImageTool] | None = Field(default=None)
     store: bool | None = Field(default=None)
+    image: str | None = Field(default=None, description="Optional reference image for image-to-image (base64 or URL)")
     user: str | None = Field(default=None)
     response_format: dict[str, Any] | None = Field(default=None)
     thinking: bool | dict[str, Any] | None = Field(default=None)
@@ -365,6 +367,7 @@ class ImageGenerationRequest(BaseModel):
         default="url",
         description="The format in which the generated images are returned. Must be one of url or b64_json.",
     )
+    image: str | None = Field(default=None, description="Optional reference image for image-to-image (base64 or URL)")
     user: str | None = Field(
         default=None,
         description="A unique identifier representing your end-user.",

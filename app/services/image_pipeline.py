@@ -1,6 +1,8 @@
 import asyncio
 import base64
-from typing import Literal
+import io
+from pathlib import Path
+from typing import Any, Literal
 
 from curl_cffi.requests import AsyncSession
 from fastapi import HTTPException
@@ -10,6 +12,7 @@ from loguru import logger
 from app.models.models import ImageItem
 from app.services.client import GeminiClientWrapper
 from app.services.pool import GeminiClientPool
+from app.utils.helper import save_url_to_tempfile
 
 
 class NoImageGeneratedError(Exception):
@@ -17,12 +20,18 @@ class NoImageGeneratedError(Exception):
     pass
 
 
-def build_image_prompt(prompt: str) -> str:
+def build_image_prompt(prompt: str, has_reference_image: bool = False) -> str:
     """
-    Wrap user prompt with strict instructions to guarantee the image generation tool is invoked,
-    suppressing conversational chatter.
+    Wrap user prompt with strict instructions to guarantee the image generation tool is invoked.
+    If a reference image is attached, guide the model into image-to-image modification mode.
     """
     cleaned = prompt.strip()
+    if has_reference_image:
+        return (
+            f"Based on the attached reference image, generate a modified image following this description: {cleaned}. "
+            "STRICT INSTRUCTION: You MUST invoke your image generation tool and return the newly generated image. "
+            "Do NOT output conversational text, explanations, or questions."
+        )
     return (
         f"Generate an image based on this description: {cleaned}. "
         "STRICT INSTRUCTION: You MUST invoke your image generation tool and return the generated image. "
@@ -31,9 +40,7 @@ def build_image_prompt(prompt: str) -> str:
 
 
 def enhance_cdn_url(url: str) -> str:
-    """
-    Upgrade Google thumbnail / preview URLs to high-resolution (2048px).
-    """
+    """Upgrade Google thumbnail/preview URLs to high-resolution (2048px)."""
     if not url:
         return url
     if "=s1024-rj" in url:
@@ -43,20 +50,39 @@ def enhance_cdn_url(url: str) -> str:
     return url
 
 
+async def prepare_reference_files(
+    reference_image: str | None,
+    tempdir: Path | None = None,
+) -> list[Any]:
+    """Convert input image URL or Base64 into Gemini uploadable file objects."""
+    if not reference_image:
+        return []
+    ref = reference_image.strip()
+    if ref.startswith("http://") or ref.startswith("https://"):
+        file_path = await save_url_to_tempfile(ref, tempdir)
+        return [file_path]
+
+    # Base64 string
+    b64_data = ref.split(",", 1)[1] if "," in ref else ref
+    try:
+        raw_bytes = base64.b64decode(b64_data)
+        file_obj = io.BytesIO(raw_bytes)
+        file_obj.name = "reference_image.png"
+        return [file_obj]
+    except Exception as e:
+        logger.warning(f"Failed to decode reference image base64: {e}")
+        return []
+
+
 async def format_image_output(
     image: Image,
     client: GeminiClientWrapper,
     response_format: Literal["url", "b64_json"] = "url",
 ) -> ImageItem:
-    """
-    Format image result with zero local disk I/O:
-    - 'url': Direct Google CDN URL with 2K resolution enhancement.
-    - 'b64_json': In-memory stream download and base64 encoding without saving to disk.
-    """
+    """Format image output with zero local disk I/O."""
     high_res_url = enhance_cdn_url(image.url)
 
     if response_format == "url":
-        # Direct CDN: 0 disk IO, 0 server bandwidth egress
         return ImageItem(url=high_res_url)
 
     # b64_json: Pure in-memory streaming
@@ -70,7 +96,6 @@ async def format_image_output(
         proxy=effective_proxy,
         headers={"Referer": "https://gemini.google.com/"},
     ) as req_session:
-        # First attempt high-res URL
         resp = await req_session.get(high_res_url)
         if resp.status_code != 200 and high_res_url != image.url:
             resp = await req_session.get(image.url)
@@ -87,26 +112,13 @@ async def format_image_output(
 async def stream_and_early_return(
     session,
     full_prompt: str,
+    files: list[Any] | None = None,
     target_count: int = 1,
     timeout: float = 60.0,
 ) -> list[Image]:
-    """
-    Stream from Gemini with early-return cut-off:
-    As soon as target image count is acquired, abort the rest of the text stream immediately.
-
-    Edge Cases Handled:
-    1. Early cut-off: Discontinue reading subsequent chunks as soon as images appear.
-    2. Generator cleanup: Explicitly aclose() the async generator to avoid lingering HTTP/2 streams.
-    3. Delayed images: Continues consuming chunks until images arrive or stream ends.
-    4. Refusals / Safety block: Detects empty image result and raises NoImageGeneratedError for failover.
-    5. Timeout protection: Uses asyncio.timeout to prevent indefinite hangs.
-    """
+    """Stream from Gemini with early-return cut-off upon image detection."""
     found_images: list[Image] = []
-
-    # temporary=True guarantees:
-    # 1. Flag 45 is sent to Google, so conversation is NOT stored in Google Cloud account history.
-    # 2. Truly stateless execution.
-    stream = session.send_message_stream(full_prompt, temporary=True)
+    stream = session.send_message_stream(full_prompt, files=files, temporary=True)
 
     try:
         async with asyncio.timeout(timeout):
@@ -117,7 +129,6 @@ async def stream_and_early_return(
                         if isinstance(img, (GeneratedImage, Image)):
                             found_images.append(img)
 
-                    # Early return: we got what we need, stop waiting for lengthy text descriptions!
                     if len(found_images) >= target_count:
                         logger.info(
                             f"[Early Return] Intercepted {len(found_images)} images. Cutting off stream early."
@@ -128,7 +139,6 @@ async def stream_and_early_return(
         if not found_images:
             raise
     finally:
-        # Gracefully close the generator to free resources and avoid connection leaks
         if hasattr(stream, "aclose"):
             try:
                 await stream.aclose()
@@ -144,27 +154,22 @@ async def stream_and_early_return(
 async def generate_images_with_failover(
     pool: GeminiClientPool,
     prompt: str,
+    reference_image: str | None = None,
     n: int = 1,
     model: str | None = None,
     response_format: Literal["url", "b64_json"] = "url",
     timeout: float = 60.0,
     max_retries: int | None = None,
 ) -> list[ImageItem]:
-    """
-    High-reliability image generation pipeline:
-    - Bypasses LMDB conversation persistence entirely.
-    - Uses Google temporary chat mode (stateless, not saved to cloud).
-    - Early return upon image arrival (no waiting for extra text).
-    - Zero local disk IO (CDN direct URL or in-memory Base64).
-    - Multi-account pool failover retry.
-    """
+    """High-reliability image generation pipeline supporting text-to-image and image-to-image."""
     total_clients = len(pool.clients)
     if total_clients == 0:
         raise HTTPException(status_code=500, detail="No Gemini clients configured in pool")
 
-    # Retry across accounts up to total_clients (capped at 3 for reasonable latency)
     retries = max_retries if max_retries is not None else max(1, min(total_clients, 3))
-    wrapped_prompt = build_image_prompt(prompt)
+    has_ref = bool(reference_image)
+    wrapped_prompt = build_image_prompt(prompt, has_reference_image=has_ref)
+    ref_files = await prepare_reference_files(reference_image)
     last_error: Exception | None = None
 
     for attempt in range(1, retries + 1):
@@ -175,17 +180,17 @@ async def generate_images_with_failover(
             raise HTTPException(status_code=503, detail="No available Gemini client in pool") from e
 
         logger.info(
-            f"[ImageGen] Attempt {attempt}/{retries} on client [{client.id}], format={response_format}"
+            f"[ImageGen] Attempt {attempt}/{retries} on client [{client.id}], format={response_format}, img2img={has_ref}"
         )
 
         try:
-            # Bypass LMDB: Start a fresh stateless chat session
-            session = client.start_chat(model=model)
+            target_model = model or "gemini-pro"
+            session = client.start_chat(model=target_model)
 
-            # Stream with early return
             images = await stream_and_early_return(
                 session=session,
                 full_prompt=wrapped_prompt,
+                files=ref_files,
                 target_count=n,
                 timeout=timeout,
             )

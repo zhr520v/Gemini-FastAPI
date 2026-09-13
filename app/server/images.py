@@ -13,28 +13,39 @@ router = APIRouter()
 
 
 @router.post(
+    "/v8/images/generations",
+    response_model=ImageGenerationResponse,
+    tags=["Images"],
+    summary="Stateless Image Generation (/v8 Dedicated Route)",
+    description="Dedicated image generation route under /v8 to distinguish from standard text API.",
+)
+@router.post(
     "/v1/images/generations",
     response_model=ImageGenerationResponse,
     tags=["Images"],
-    summary="Stateless Image Generation (OpenAI-compatible)",
-    description="""
-High-performance, stateless image generation pipeline for Gemini:
-- **Zero Local Disk I/O**: Direct high-res Google CDN URLs or pure in-memory Base64 strings.
-- **Early Return**: Intercepts generated images immediately from the stream, skipping trailing text generation.
-- **Bypasses LMDB Storage**: Fully stateless, runs in Google Temporary Chat mode (not saved to account history).
-- **Multi-Account Failover Retry**: Automatically retries across available accounts in the pool if an account fails or refuses to draw.
-""",
+    summary="Stateless Image Generation (OpenAI-compatible /v1)",
+    description="Standard OpenAI compatible image generation endpoint.",
 )
 async def generate_images(
     request: ImageGenerationRequest,
     _auth=Depends(verify_api_key),
 ):
+    """
+    High-performance, stateless image generation pipeline:
+    - Supports both /v8/images/generations and /v1/images/generations.
+    - Zero local disk I/O with in-memory Base64.
+    - Early Return: cuts off stream immediately upon image interception.
+    - Full image-to-image support: accepts reference image (Base64 or URL) via image field.
+    - Bypasses LMDB Storage: fully stateless, runs in Google Temporary Chat mode.
+    - Multi-Account Failover: automatically retries across available accounts in pool.
+    """
     pool = GeminiClientPool()
     format_type: Literal["url", "b64_json"] = request.response_format or "url"
 
     items = await generate_images_with_failover(
         pool=pool,
         prompt=request.prompt,
+        reference_image=request.image,
         n=request.n or 1,
         model=request.model,
         response_format=format_type,
@@ -52,10 +63,6 @@ async def proxy_image_stream(
     url: str = Query(..., description="Google CDN Image URL"),
     _auth=Depends(verify_api_key),
 ):
-    """
-    Optional stream proxy for clients that cannot reach Google CDN directly.
-    Streams directly in memory without writing to disk.
-    """
     if "googleusercontent.com" not in url:
         raise HTTPException(status_code=400, detail="Only Google CDN URLs are allowed")
 
