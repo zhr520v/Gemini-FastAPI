@@ -172,7 +172,7 @@ async def generate_images_with_failover(
             client = await pool.acquire()
         except Exception as e:
             logger.error(f"[ImageGen] Failed to acquire client from pool: {e}")
-            raise HTTPException(status_code=503, detail="No available Gemini client in pool")
+            raise HTTPException(status_code=503, detail="No available Gemini client in pool") from e
 
         logger.info(
             f"[ImageGen] Attempt {attempt}/{retries} on client [{client.id}], format={response_format}"
@@ -221,4 +221,4 @@ async def generate_images_with_failover(
     raise HTTPException(
         status_code=502,
         detail=f"Image generation failed after {retries} client attempts: {last_error}",
-    )
+    ) from last_error
