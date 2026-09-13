@@ -806,14 +806,31 @@ def _get_model_by_name(name: str) -> Model:
     custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
     if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
+        m_cfg = custom_models[name]
+
+        class _CustomModel:
+            def __init__(self, m_name, m_hdr):
+                self.model_name = m_name
+                self.model_header = m_hdr or {}
+
+        return _CustomModel(m_cfg.model_name, m_cfg.model_header)  # type: ignore
 
     if strategy == "overwrite":
-        raise ValueError(f"Model '{name}' not found in custom models (strategy='overwrite').")
+        raise ValueError(f"Model {name} not found in custom models (strategy=overwrite).")
 
-    return Model.from_name(name)
+    target = name.strip().lower()
+    for model in Model:
+        if model.model_name.lower() == target:
+            return model
+        if model.name.lower() == target.replace("-", "_"):
+            return model
 
+    for model in Model:
+        if model.model_name and target in model.model_name.lower():
+            return model
 
+    supported = [m.model_name for m in Model if m.model_name and m.model_name != "unspecified"]
+    raise ValueError(f"Unknown model name: {name}. Supported models: {supported}")
 def _get_available_models() -> list[ModelData]:
     """Return a list of available models based on configuration strategy."""
     now = int(datetime.now(tz=UTC).timestamp())
