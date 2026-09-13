@@ -115,6 +115,7 @@ class GeminiConfig(BaseModel):
         default=OversizedContextStrategy.COMPACTION,
         description="Strategy for oversized context: 'compaction' summarizes older turns, 'file' sends oversized context as attachment",
     )
+    extended_thinking: bool = Field(default=False, description="Enable extended thinking mode (chain-of-thought)")
     chat_mode: ChatMode = Field(
         default=ChatMode.TEMPORARY,
         description="Chat mode: 'normal' uses standard chats, 'temporary' uses Google's temporary mode (not saved to account) and enforces an effective input limit of 90% of max_chars_per_request",

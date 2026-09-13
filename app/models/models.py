@@ -124,6 +124,8 @@ class ChatCompletionRequest(BaseModel):
         Literal["none"] | Literal["auto"] | Literal["required"] | ToolChoiceFunction | None
     ) = Field(default=None)
     response_format: dict[str, Any] | None = Field(default=None)
+    thinking: bool | dict[str, Any] | None = Field(default=None)
+    reasoning_effort: str | None = Field(default=None)
 
 
 class ChatCompletionResponse(BaseModel):
@@ -219,6 +221,8 @@ class ResponseCreateRequest(BaseModel):
     store: bool | None = Field(default=None)
     user: str | None = Field(default=None)
     response_format: dict[str, Any] | None = Field(default=None)
+    thinking: bool | dict[str, Any] | None = Field(default=None)
+    reasoning_effort: str | None = Field(default=None)
     metadata: dict[str, Any] | None = Field(default=None)
 
 

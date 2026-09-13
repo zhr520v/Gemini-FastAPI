@@ -430,6 +430,9 @@ def _persist_conversation(
     tool_calls: list[Any] | None,
     thoughts: str | None = None,
 ) -> str | None:
+    if g_config.gemini.chat_mode == ChatMode.TEMPORARY:
+        return None
+
     """Unified logic to save conversation history to LMDB."""
     try:
         current_assistant_message = Message(
@@ -930,14 +933,15 @@ async def _send_with_split(
     files: list[Path | str | io.BytesIO] | None = None,
     stream: bool = False,
     temporary: bool = False,
+    extended_thinking: bool = False,
 ) -> AsyncGenerator[ModelOutput] | ModelOutput:
     """Send text to Gemini, splitting or converting to attachment if too long."""
     effective_limit = _effective_max_chars_per_request()
     if len(text) <= effective_limit:
         try:
             if stream:
-                return session.send_message_stream(text, files=files, temporary=temporary)
-            return await session.send_message(text, files=files, temporary=temporary)
+                return session.send_message_stream(text, files=files, temporary=temporary, extended_thinking=extended_thinking)
+            return await session.send_message(text, files=files, temporary=temporary, extended_thinking=extended_thinking)
         except Exception as e:
             logger.exception(f"Error sending message to Gemini: {e}")
             raise
@@ -956,8 +960,8 @@ async def _send_with_split(
             "Acknowledge it briefly, then treat it as the primary user input for this turn and answer based on it."
         )
         if stream:
-            return session.send_message_stream(instruction, files=final_files, temporary=temporary)
-        return await session.send_message(instruction, files=final_files, temporary=temporary)
+            return session.send_message_stream(instruction, files=final_files, temporary=temporary, extended_thinking=extended_thinking)
+        return await session.send_message(instruction, files=final_files, temporary=temporary, extended_thinking=extended_thinking)
     except Exception as e:
         logger.exception(f"Error sending large text as file to Gemini: {e}")
         raise
@@ -983,6 +987,7 @@ async def _send_with_internal_fallback(
     stream: bool,
     reused_session: bool,
     temporary: bool,
+    extended_thinking: bool = False,
 ) -> tuple[AsyncGenerator[ModelOutput] | ModelOutput, ChatSession, GeminiClientWrapper]:
     try:
         output = await _send_with_split(
@@ -991,6 +996,7 @@ async def _send_with_internal_fallback(
             files=files,
             stream=stream,
             temporary=temporary,
+            extended_thinking=extended_thinking,
         )
         return output, session, client
     except Exception as exc:
@@ -1019,6 +1025,7 @@ async def _send_with_internal_fallback(
             files=fallback_files,
             stream=False,
             temporary=temporary,
+            extended_thinking=extended_thinking,
         )
         return output, fallback_session, fallback_client
 
@@ -1803,9 +1810,13 @@ async def create_chat_completion(
         extra_instr,
     )
 
-    session, client, remain = await _find_reusable_session(db, pool, model, msgs)
-    reused_session = session is not None
     use_google_temporary_mode = g_config.gemini.chat_mode == ChatMode.TEMPORARY
+    if use_google_temporary_mode:
+        session, client, remain = None, None, msgs
+        reused_session = False
+    else:
+        session, client, remain = await _find_reusable_session(db, pool, model, msgs)
+        reused_session = session is not None
 
     if session:
         if not remain:
@@ -1854,6 +1865,14 @@ async def create_chat_completion(
         logger.debug(
             f"Client ID: {client.id}, Input length: {len(m_input)}, files count: {len(files)}"
         )
+        is_thinking_model = any(k in request.model.lower() for k in ["think", "extended", "reasoning"])
+        is_thinking_param = bool(
+            request.thinking
+            or (request.reasoning_effort and str(request.reasoning_effort).lower() not in {"none", "low", "false"})
+            or g_config.gemini.extended_thinking
+        )
+        enable_extended_thinking = is_thinking_model or is_thinking_param
+
         resp_or_stream, session, client = await _send_with_internal_fallback(
             pool=pool,
             model=model,
@@ -1866,6 +1885,7 @@ async def create_chat_completion(
             stream=bool(request.stream),
             reused_session=reused_session,
             temporary=use_google_temporary_mode,
+            extended_thinking=enable_extended_thinking,
         )
     except Exception as e:
         logger.exception("Gemini API error")
