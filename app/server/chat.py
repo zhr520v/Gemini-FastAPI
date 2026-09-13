@@ -800,37 +800,42 @@ def _instructions_to_messages(
     return instruction_messages
 
 
-def _get_model_by_name(name: str) -> Model:
-    """Retrieve a Model instance by name."""
+class AppModel:
+    """Normalized model container holding a clean string model name."""
+
+    def __init__(self, name: str, header: dict | None = None):
+        self.model_name = name
+        self.model_header = header or {}
+
+    def __str__(self) -> str:
+        return self.model_name
+
+    def __repr__(self) -> str:
+        return f"AppModel({self.model_name})"
+
+
+def _get_model_by_name(name: str) -> AppModel:
+    """Retrieve a clean AppModel instance with string model name to avoid deprecated Model enum fallback."""
     strategy = g_config.gemini.model_strategy
     custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
     if name in custom_models:
         m_cfg = custom_models[name]
-
-        class _CustomModel:
-            def __init__(self, m_name, m_hdr):
-                self.model_name = m_name
-                self.model_header = m_hdr or {}
-
-        return _CustomModel(m_cfg.model_name, m_cfg.model_header)  # type: ignore
+        return AppModel(m_cfg.model_name, m_cfg.model_header)
 
     if strategy == "overwrite":
         raise ValueError(f"Model {name} not found in custom models (strategy=overwrite).")
 
     target = name.strip().lower()
-    for model in Model:
-        if model.model_name.lower() == target:
-            return model
-        if model.name.lower() == target.replace("-", "_"):
-            return model
 
-    for model in Model:
-        if model.model_name and target in model.model_name.lower():
-            return model
+    if "lite" in target:
+        return AppModel("gemini-flash-lite")
+    elif "pro" in target:
+        return AppModel("gemini-pro")
+    elif "flash" in target:
+        return AppModel("gemini-flash")
 
-    supported = [m.model_name for m in Model if m.model_name and m.model_name != "unspecified"]
-    raise ValueError(f"Unknown model name: {name}. Supported models: {supported}")
+    return AppModel(name)
 def _get_available_models() -> list[ModelData]:
     """Return a list of available models based on configuration strategy."""
     now = int(datetime.now(tz=UTC).timestamp())
@@ -889,7 +894,7 @@ async def _find_reusable_session(
                     if age_minutes <= METADATA_TTL_MINUTES:
                         client = await pool.acquire(conv.client_id)
                         try:
-                            session = client.start_chat(metadata=conv.metadata, model=model)
+                            session = client.start_chat(metadata=conv.metadata, model=model.model_name)
                         except Exception as exc:
                             logger.warning(
                                 f"Failed to reuse metadata chat at prefix length {search_end}: {exc}"
@@ -1001,7 +1006,7 @@ async def _send_with_internal_fallback(
             "Metadata-backed chat reuse failed; retrying with internal history replay in a fresh chat."
         )
         fallback_client = await pool.acquire()
-        fallback_session = fallback_client.start_chat(model=model)
+        fallback_session = fallback_client.start_chat(model=model.model_name)
         fallback_input, fallback_files = await _process_conversation_with_compaction(
             full_prepared_messages,
             tmp_dir,
@@ -1828,7 +1833,7 @@ async def create_chat_completion(
     else:
         try:
             client = await pool.acquire()
-            session = client.start_chat(model=model)
+            session = client.start_chat(model=model.model_name)
             # Use the already prepared 'msgs' for a fresh session
             m_input, files = await _process_conversation_with_compaction(
                 msgs,
@@ -2026,7 +2031,7 @@ async def create_response(
     else:
         try:
             client = await pool.acquire()
-            session = client.start_chat(model=model)
+            session = client.start_chat(model=model.model_name)
             m_input, files = await _process_conversation_with_compaction(
                 messages,
                 tmp_dir,
